@@ -1,0 +1,12 @@
+Act as a Senior AI Engineer. Refactor my existing RAG application in VS Code.
+Requirements:
+Keep the existing functionality unchanged.
+Improve code structure, readability, and modularity.
+Remove duplicate and unnecessary code.
+Separate ingestion, chunking, embeddings, vector database, retrieval, LLM generation, and UI into clean modules.
+Improve error handling, logging, configuration, and environment-variable management.
+Optimize retrieval quality, latency, and token usage.
+Add clear comments only where necessary.
+Do not change working features unless required.
+Run/tests the application after refactoring and fix any errors.
+First analyze the existing project, then refactor it step-by-step and provide a summary of what was improved.
