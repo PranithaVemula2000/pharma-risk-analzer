@@ -1,0 +1,179 @@
+# CLAUDE.md — DevGuard
+
+Governed agentic deviation review for pharma. One engine, two domain packs.
+
+> **Read this file + `PROGRESS.md` only. Do not read other files unless the current phase names them.**
+
+---
+
+## 1. Project
+
+**Problem.** A protocol deviation (Clinical) or a batch deviation (Manufacturing) requires a reviewer to manually gather evidence from several systems, judge severity/impact, draft a CAPA, and produce an audit-defensible record. Slow, inconsistent, and the reasoning is rarely captured.
+
+**Solution.** A Supervisor plans the review, sub-agents retrieve evidence via MCP, deterministic code computes facts, an LLM drafts narrative, hooks enforce guardrails, and a qualified human approves before anything is finalised.
+
+**Users.** Clinical Data Reviewer / QA Investigator (primary) · CTM or QA Head (approver) · Auditor (consumes trace).
+
+**Out of scope.** Batch release/rejection. Causality or medical judgment. Any real patient or personal data.
+
+---
+
+## 2. Non-negotiable rules
+
+1. **No unsupported claims.** Every factual statement in output must carry an evidence ID from an MCP call. If evidence is missing → **escalate, never infer**.
+2. **Numbers from code, prose from LLM.** Never let the model compute an excursion, a visit window or a duration.
+3. **Human approval is blocking.** No final output without a recorded approver identity + timestamp.
+4. **Synthetic data only.**
+5. **Pin model IDs.** Exact OpenRouter IDs in config; never `:free` in the demo path; prompt logging disabled.
+6. **Agent is read-only over evidence.** MCP servers expose no write tools.
+
+---
+
+## 3. Architecture
+
+```
+User request
+     ↓
+Supervisor (plan → delegate → re-plan)
+     ↓ loads domain pack (clinical | manufacturing)
+┌────────────┬────────────┬────────────┬────────────┐
+│ Retrieval  │ DataCheck  │ Classifier │ CAPADrafter│   ← sub-agents
+└────────────┴────────────┴────────────┴────────────┘
+     ↓ MCP: documents · plantdata · equipment · deviations
+Deterministic checks → Guardrail hooks → HITL gate → Trace log
+```
+
+### Domain packs
+
+| | Clinical | Manufacturing |
+|---|---|---|
+| Governing doc | Study protocol | BMR + SOP |
+| Evidence | Subject visits, deviation log | Temp trace, calibration, maintenance, lab results |
+| Classify | Major/Minor · Reportable? | Critical/Major/Minor · Product impact? |
+| Approver | CTM | QA Head |
+
+---
+
+## 4. Layout
+
+```
+devguard/
+├── CLAUDE.md  PROGRESS.md  README.md  .mcp.json  .env.example
+├── config/models.yaml            # OpenRouter routing
+├── data/                         # synthetic CSV/PDF
+├── mcp_servers/                  # doc, data, equipment, deviation
+├── packs/clinical/ manufacturing/  # rules.yaml + prompts
+├── src/  supervisor.py  agents/  skills/  checks/  guardrails.py
+│         hitl.py  trace.py  llm.py
+├── .claude/agents/  skills/  hooks/  settings.json
+├── eval/golden_set.json  run_eval.py  redteam.py
+└── logs/traces/
+```
+
+---
+
+## 5. Model routing (OpenRouter)
+
+| Step | Model | $/1M in-out |
+|---|---|---|
+| Triage, guardrail check | `openai/gpt-5.6-luna` | 0.20 / 1.20 |
+| **Supervisor planning** | `anthropic/claude-opus-5` | 5 / 25 |
+| Retrieval (long ctx) | `z-ai/glm-5.3-flash` | 0.15 / 0.50 |
+| Extraction, tool exec | `deepseek/deepseek-v4.1-flash` | 0.10 / 0.50 |
+| Analysis, drafting | `anthropic/claude-sonnet-5` | 2 / 10 |
+| Eval judge (cross-family) | `openai/gpt-6-astra` | 10 / 50 |
+
+Rule: spend on the plan, save on the pass-through.
+
+---
+
+## 6. Standards
+
+Python 3.11 · type hints on public functions · `ruff` clean · Pydantic models for all agent I/O · structured JSON logs · no secrets in code · no network calls outside OpenRouter + local MCP.
+
+**Every MCP response must include:**
+```json
+{"value": ..., "source": {"server","tool","record_id","file","retrieved_at"}}
+```
+
+---
+
+## 7. Token discipline — read this before every phase
+
+- Work **one phase at a time**. Do not look ahead.
+- Read only files listed in that phase's `Touches`.
+- Do not re-read files already summarised in `PROGRESS.md`.
+- Do not refactor earlier phases unless the phase says so.
+- After each phase: update `PROGRESS.md`, then **stop and wait**.
+- Keep `PROGRESS.md` under 150 lines — compress old entries to one line each.
+
+---
+
+## 8. Definition of done (per phase)
+
+Code runs · phase test passes · `PROGRESS.md` updated · no rule in §2 violated.
+# PROGRESS.md — DevGuard
+
+**Current phase: 0 (not started)**
+Last updated: —
+
+> Claude: read `CLAUDE.md` §7 first. Execute **only** the current phase. Update the log below, then stop.
+
+---
+
+## Phase plan
+
+| # | Phase | Goal | Touches | Done when | Est |
+|---|---|---|---|---|---|
+| 0 | Scaffold | Folders, `.env.example`, `models.yaml`, `llm.py` (OpenRouter client + token/latency capture) | `config/`, `src/llm.py` | `python -m src.llm --ping` returns a completion + logs tokens | 10m |
+| 1 | Synthetic data | `deviations.csv`, `equipment_traces.csv`, `maintenance.csv`, `lab_results.csv`, `subject_visits.csv`, 2 small PDFs (SOP, protocol) | `data/`, `scripts/gen_data.py` | Files exist; ~500 rows total; B-2291 case present | 10m |
+| 2 | MCP servers | 4 read-only servers + `.mcp.json`. BM25 over PDF chunks in doc server | `mcp_servers/`, `.mcp.json` | Each tool callable; every response carries `source` block | 20m |
+| 3 | Deterministic checks | Excursion magnitude/duration, service-interval breach, visit-window breach. **Pure Python, no LLM** | `src/checks/` | Unit tests pass on B-2291 | 10m |
+| 4 | Sub-agents | Retrieval, DataCheck, Classifier, CAPADrafter + `.claude/agents/*.md` with tool allowlists | `src/agents/`, `.claude/agents/` | Each runs standalone on B-2291 | 20m |
+| 5 | Supervisor | Plan → delegate → **re-plan on new evidence** → assemble. State object threaded through | `src/supervisor.py` | Re-plan fires on stale-calibration finding; adds affected-batch step | 20m |
+| 6 | Guardrails + hooks | Block unsupported claims, block writes, block out-of-scope asks; `.claude/hooks/` | `src/guardrails.py`, `.claude/hooks/` | "No product impact" without lab result is blocked, then corrected | 15m |
+| 7 | HITL gate | Approval prompt; records approver + timestamp; blocks finalisation | `src/hitl.py` | No output file written without approval record | 10m |
+| 8 | Trace + observability | Per-step JSON: model, tool, evidence ID, tokens, latency, cost. Render trace table | `src/trace.py`, `logs/traces/` | Full chain renders for one run | 15m |
+| 9 | Clinical pack | `packs/clinical/rules.yaml` + prompts. **No agent/hook changes** | `packs/clinical/` | Same engine classifies a protocol deviation | 15m |
+| 10 | Evaluation | Golden set (~20 cases), scorer vs `gpt-6-astra`, redteam prompts | `eval/` | Accuracy + citation-rate + refusal-rate reported | 15m |
+| 11 | README + demo | Architecture diagram, run instructions, demo script, production swap-in table | `README.md` | End-to-end run reproducible from README | 10m |
+
+**Priority if time runs short:** 0→8 is the graded core. Phase 9 can ship with a reduced rule set. Never cut 6, 7 or 8.
+
+---
+
+## Fixed demo case
+
+`B-2291` — drying step, spec 60°C ±5°C / 4h, actual peak 72°C for 20 min, Oven-04, last service 14 months ago (12-month schedule), 2 other batches affected.
+
+---
+
+## Log
+
+_(append one line per phase — keep terse)_
+
+| Phase | Status | Built | Notes / decisions |
+|---|---|---|---|
+| 0 | ☐ | | |
+| 1 | ☐ | | |
+| 2 | ☐ | | |
+| 3 | ☐ | | |
+| 4 | ☐ | | |
+| 5 | ☐ | | |
+| 6 | ☐ | | |
+| 7 | ☐ | | |
+| 8 | ☐ | | |
+| 9 | ☐ | | |
+| 10 | ☐ | | |
+| 11 | ☐ | | |
+
+---
+
+## Open items
+
+- [ ] Decide BM25-only vs hybrid retrieval (default: BM25-only; upgrade only if Phase 10 shows retrieval misses)
+
+## Deferred
+
+- OpenSearch / vector index — not needed for PoC
+- Real connector auth — documented as swap-in only
